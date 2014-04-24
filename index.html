@@ -1,0 +1,451 @@
+<html>
+<head>
+    <title>Cubes</title>
+    <style>
+        canvas {
+            width: 100%;
+            height: 100%;
+        }
+    </style>
+</head>
+<body>
+
+    <script src="Scripts/three.js"></script>
+    <script src="Scripts/stats.min.js"></script>
+    <script src="Scripts/TrackballControls.js"></script>
+    <script src="toolTip.js"></script>
+    <script src="packer.js"></script>
+    <script src="blocks.js"></script>
+
+    <script>	
+	
+	//TODO
+	//[LOW] fix rootSD / packer dimension approximation for close to 3:4 layout (test small numbers and large numbers)
+	//[LOW] drop-down to alternate w/h/d/color mapping
+	//[LOW] legend (in 3D), also include color thresholds
+	//[LOW] remove base and see if rays are more accurate
+	//[LOW] Zoom to
+	//Have tool tip flip to left side when passing center point
+	//Filters (use eval? to drive array.filter() callback from a drop-down)
+	//Fix zoom issue on large # of blocks (e.g. 2000+), zoom slows to a crawl on close ups (esp. isometric angle trying to zoom to back) 
+	//introduce metric object (encapsulate strategies, fluent interface, etc.) 
+	//introduce blocks object ("PackedBlocks"? .packerRef, .margin?)
+	//separate rending code into separate file
+	//determine how to refresh page without reloading
+	//how to add in metrics when aggregated (e.g. Class structuring (NOM/Class))
+	//show diffs
+	
+		
+	
+	var scene, camera, renderer;	
+	var controls;
+	var stats;	
+	
+	function handleFileSelect(evt) {
+		var files = evt.target.files; // FileList object
+		
+		// Loop through the FileList and render image files as thumbnails.
+		for (var i = 0, f; f = files[i]; i++) {
+
+		  var reader = new FileReader();
+
+		  // Closure to capture the file information.
+		  reader.onload = (function(theFile) {
+			return function(e) {
+			  var metricData = JSON.parse(e.target.result);  
+			  var aggregate = document.getElementById("class").checked;			  
+			  showChart(metricData, aggregate);			   
+			};
+		  })(f);
+
+		  reader.readAsText(f);
+		}
+	  }
+
+	
+function setupScene(far, cameraPosition)
+{	
+		
+	if(renderer)
+	{
+		document.body.removeChild(renderer.domElement);	
+		renderer = null;
+		scene = null;
+		camera = null;
+	}	
+		
+	renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+	renderer.setSize(window.innerWidth, window.innerHeight);
+	renderer.autoClear = false; //needed for tool tip (to allow for overlay)
+
+	document.body.appendChild(renderer.domElement); 
+
+	scene = new THREE.Scene();
+	camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 1, far);
+
+	//debug
+	console.log(window.innerWidth + " " + window.innerHeight + " " + (window.innerWidth / window.innerHeight));
+
+	camera.position = cameraPosition
+
+	scene.add(camera);	
+
+	var light = new THREE.AmbientLight(0x505050);
+	//scene.add(light);
+
+
+	//top & back
+	var directionalLight = new THREE.DirectionalLight(0xffffff, .8);
+	directionalLight.position.set(0, 1, 1);
+	scene.add(directionalLight);
+
+	//right & back
+	directionalLight = new THREE.DirectionalLight(0xffffff, 1);
+	directionalLight.position.set(1, 1, 0);
+	scene.add(directionalLight);
+
+	//bottom & front
+	directionalLight = new THREE.DirectionalLight(0xffffff, .3);
+	directionalLight.position.set(0, -1, -1);
+	scene.add(directionalLight);
+
+	//left & front
+	directionalLight = new THREE.DirectionalLight(0xffffff, 1);
+	directionalLight.position.set(-1, -1, 0);
+	scene.add(directionalLight);
+
+	cameraControls = initTrackball(camera, 0.8);
+		
+	//set starting point
+	cameraControls.target.set(camera.position.x, camera.position.y, 0); // = v1;
+
+}	
+	
+function showStats()
+{
+	stats = new Stats();
+	stats.domElement.style.position = 'absolute';
+	stats.domElement.style.top = '0px';
+	document.body.appendChild(stats.domElement);
+}	
+	
+function showChart(metrics, aggregate)
+{
+					
+	var margin = 5;			
+	var baseCubeHeight = 5;
+
+	//FILTERS
+	//var filteredMetricData = metrics.filter(function(metric) { return metric.loc <= 6; });
+	//var filteredMetricData = metrics.filter(filterByName, "certification");
+
+    var blocks;
+	
+	if (aggregate)
+	{
+	    var aggMetricData = aggregateMetricDataByClassName(metrics);
+	    blocks = mapMetricsToBlocks(aggMetricData, 6);
+	    //DEBUG
+	    console.log(aggMetricData);
+	    //DEBUG END
+	}
+	else
+	{
+	    blocks = mapMetricsToBlocks(metrics, 6);
+	    //DEBUG
+	    console.log(metrics);
+	    //DEBUG END
+	}
+
+	var metaPackers = [];
+
+	for (var className in blocks)
+	{
+		packItems(blocks[className], margin);	
+		var classRootBlock = getTrimmedRootBlock(blocks[className]);
+		metaPackers.push(classRootBlock);
+	}
+
+	packItems(metaPackers, 5);
+
+	//DEBUG
+	console.log("Field " + metaPackers.packerRef.root.w + " " + metaPackers.packerRef.root.h + " ratio " + (metaPackers.packerRef.root.h / metaPackers.packerRef.root.w));
+	
+
+	//for 1000 items
+	vector = new THREE.Vector3( metaPackers.packerRef.root.w / 2, metaPackers.packerRef.root.h / 2.5, metaPackers.packerRef.root.h + (metaPackers.packerRef.root.h * .05) );
+	
+	setupScene(metaPackers.packerRef.root.h * 3.5, vector);
+
+	for (var className in blocks)
+	{
+		var classBlocks = blocks[className];
+		var pr = classBlocks.packerRef;
+		var packerBlock = pr.root;	
+		drawBlocks(classBlocks, packerBlock.fit.x, packerBlock.fit.y, baseCubeHeight, margin);
+		if (!aggregate)
+		{
+			drawCube(packerBlock.fit.x, packerBlock.fit.y, 0, packerBlock.w, packerBlock.h, baseCubeHeight - 1, 0xC0C0C0, null); //draw class rectangle
+		}			
+	}
+	
+	//Aggregate Rectangle
+	if (aggregate)
+	{
+		var rootBlock = getTrimmedRootBlock(metaPackers);
+		drawCube(0, 0, 0, rootBlock.w, rootBlock.h, baseCubeHeight, 0xFFFFFF, null);
+	}
+	else
+	{
+		var rootBlock = getTrimmedRootBlock(metaPackers);
+		drawCube(0, 0, -baseCubeHeight + 1, rootBlock.w, rootBlock.h, baseCubeHeight - 1, 0xFFFFFF, null);	
+	}
+	
+	initToolTip();
+
+	render();
+	
+}	
+	
+function magnifyExponential(val) {
+    return Math.round(Math.pow(val, val) / Math.pow(val, val - 3) * 100);
+}
+
+function addVisualFloor(val, floor) {
+    return val + floor;
+}
+
+function filterByName(metric) {
+    var regEx = new RegExp(this, "i");
+    return regEx.test(metric.name);
+}
+
+function aggregateMetricDataByClassName(metrics) {
+    var classMetricData = metrics.reduce(groupByClassName, {});
+    console.log(classMetricData);
+
+    var aggregatedMetricData = [];
+
+    for (var className in classMetricData) {
+        aggregatedMetricData.push(roundMetric(classMetricData[className].map(mapMetric).reduce(reduceMetric, { cc: 0, loc: 0, maint: 0 })));
+    }
+
+    return aggregatedMetricData;
+}
+
+function groupByClassName(previousValue, currentValue) {
+    if (previousValue[currentValue.gn] == undefined)
+        previousValue[currentValue.gn] = []; //init array
+    previousValue[currentValue.gn].push(currentValue);
+    return previousValue;
+}
+
+function reduceMetric(previousValue, currentValue, index, array) {
+    currentValue.loc += previousValue.loc;
+    currentValue.cc += previousValue.cc;
+    currentValue.maint += previousValue.maint;
+    currentValue.name = "[" + (index + 1) + " Method(s) Averaged]";
+    return currentValue;
+}
+
+function mapMetric(currentValue, index, array) {
+    currentValue.loc /= array.length;
+    currentValue.cc /= array.length;
+    currentValue.maint /= array.length;
+    return currentValue;
+}
+
+function roundMetric(metric) {
+    metric.loc = metric.loc.toFixed(2);
+    metric.cc = metric.cc.toFixed(2);
+    metric.maint = metric.maint.toFixed(2);
+    return metric;
+}
+
+//TODO: make filter dynamic
+function mapMetricsToBlocks(metrics, minLOCFilter)
+{
+
+    var transforms = [];
+
+    transforms["IntrinsicOperationComplexity"] =
+		function (metric) {
+	        return (metric.cc / metric.loc);
+		};
+
+    transforms["CyclomaticComplexity"] =
+		function (metric) {
+		    return (metric.cc);
+		};
+
+    transforms["Maintainablility"] =
+		function (metric) {
+		    return (metric.maint);
+		};
+
+    transforms["CCThresholdPassed"] =
+		function (metric) {
+		    return (metric.cc > 7);
+		};
+
+    var blocks = [];
+    for (var n = 0 ; n < metrics.length ; n++) {
+        var metric = metrics[n];
+
+        if (metric.loc < minLOCFilter)
+            continue; //skip methods with less than X loc
+
+        if (blocks[metric.gn] == undefined)
+            blocks[metric.gn] = []; //init array
+
+        var ioc = transforms["IntrinsicOperationComplexity"](metric);
+        var maint = transforms["Maintainablility"](metric);
+        var cc = transforms["CyclomaticComplexity"](metric);
+        var ctp = transforms["CCThresholdPassed"](metric);
+
+        var w = metric.loc;
+        var h = cc;
+        var d = addVisualFloor(magnifyExponential(ioc), 1);
+        var color = ctp ? 0xff5555 : 0x7777ff;
+
+        var desc = metric.gn + "." + metric.name + " LOC: " + metric.loc + " CC: " + h + " Intrinsic Operation Complexity: " + ioc.toFixed(2);
+
+        blocks[metric.gn].push({ w: w, h: h, d: d, metric: metric, desc: desc, color: color });
+    }
+    return blocks;
+}
+
+
+function randomMetrics(quantity)
+{
+    var numberOfGroups = 10;
+    var randomW, randomH, randomD, metrics = [];
+    for (i = 0; i < quantity; i++) {
+        randomLOC = Math.ceil(Math.random() * 100);
+        randomCC = Math.ceil(randomLOC * Math.random());
+        randomMaint = Math.ceil(Math.random() * 50);
+        randomGroupNum = Math.floor(Math.random() * numberOfGroups);
+        metrics.push({ loc: randomLOC, cc: randomCC, maint: randomMaint, name: "[Name Here]", gn: "group" + randomGroupNum })
+    }
+    return metrics;
+}
+
+function packItems(items, margin) {
+
+    var rootSD = calcTotalAreaSquareDimension(items, margin);
+    var maxWidth = this.maxWidth(items, margin);
+
+    //TODO: rootSD / 3 not sufficient for smaller quantities			
+    var extraWidth = Math.max((rootSD / 3), maxWidth);
+
+    //testing only, no other relevance
+    var extraHeight = extraWidth / 2;
+
+    var packer = new Packer(rootSD + extraWidth, rootSD + extraHeight);
+    packer.fit(items, margin);
+
+    //log blocks in case any did not fit
+    for (var n = 0 ; n < items.length ; n++) {
+        var block = items[n];
+
+        if (!block.fit) {
+            console.log("not fit! w:" + block.w + " h:" + block.h);
+        }
+    }
+
+}
+
+	var render = function ()
+	{
+		requestAnimationFrame(render);
+		
+		renderer.render(scene, camera);
+				
+		if (stats)
+			stats.update();
+			
+		cameraControls.update();
+		
+		updateToolTip(scene, camera, renderer)
+	};	
+	
+	function drawBlocks(blocks, xOffset, yOffset, zOffset, margin)
+	{
+
+		for(var i = 0 ; i < blocks.length ; i++)
+		{				
+			var block = blocks[i];		
+			
+			var d = block.d;
+			var w = block.w;
+			var h = block.h;
+			var x = block.fit.x + xOffset + margin;
+			var y = block.fit.y + yOffset + margin;
+			var z = zOffset;
+							
+			drawCube(x, y, z, w, h, d, block.color, block.desc);
+			
+		}
+
+	}	
+
+	function drawCube(x, y, z, w, h, d, color, text)
+	{
+	
+		//// Load Colors on Cube Sides
+		var plainMaterial = new THREE.MeshPhongMaterial({
+			color: color,
+			ambient: 0xFFFFFF,
+			specular: 0x000000,
+			shininess: 25,
+			reflectivity: 1.5
+		});
+
+				var material = plainMaterial;
+	
+		//get centers
+		x = x + (w / 2);
+		y = y + (h / 2);
+		z = z + (d / 2);
+		
+		var geometry = new THREE.CubeGeometry(w, h, d);
+		var cube = new THREE.Mesh(geometry, material);
+		cube.position = new THREE.Vector3(x, y, z);
+		cube.name = text;
+		scene.add(cube);		
+	}
+	
+	function randomColor() {
+		return "rgb(" + Math.floor(Math.random() * 256) + "," + Math.floor(Math.random() * 256) + "," + Math.floor(Math.random() * 256) + ")";
+	}
+
+	function initTrackball(camera, rotate, zoom, pan, damping) {
+		controls = new THREE.TrackballControls(camera);
+		controls.rotateSpeed = rotate || 1.0;
+		controls.zoomSpeed = zoom || 1.2;
+		controls.panSpeed = pan || 0.8;
+		controls.noZoom = false;
+		controls.noPan = false;
+		controls.staticMoving = true;
+		controls.dynamicDampingFactor = damping || 0.3;
+		return controls;
+	}
+
+	var i=document.createElement("div");
+	i.innerHTML="<input type=file id=files name=files[] multiple />";
+	i.style.position = 'absolute';
+	i.style.top = '0px';
+	document.body.appendChild(i)
+	
+	var j=document.createElement("div");
+	j.innerHTML="Level: <input type=radio id=method name=level value=method checked />Method <input type=radio id=class name=level value=class />Class";
+	j.style.position = 'absolute';
+	j.style.top = '30px';
+	document.body.appendChild(j)	
+	
+	document.getElementById('files').addEventListener('change', handleFileSelect, false);
+	
+</script>
+	
+</body>
+</html>
